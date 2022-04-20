@@ -427,6 +427,9 @@ wait(uint64 addr)
   }
 }
 
+unsigned char isPaused;
+int timeTarget;
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -442,26 +445,43 @@ scheduler(void)
   
   c->proc = 0;
   for(;;){
+    if (isPaused){ // timeTarget = ticks + seconds * 10.
+      if (ticks >= timeTarget){
+        isPaused = 0;
+      }
+      continue;
+    }
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
+    struct proc *cur_min = proc;
+    for(p = proc; p < &proc[NPROC]; p++){
+      #ifdef SJF
+      if (cur_min->mean_ticks > p->mean_ticks){
+        if(p->state == RUNNABLE){
+          cur_min = p;
+        }
       }
-      release(&p->lock);
     }
+    p = cur_min;
+    #endif
+    acquire(&p->lock);
+    if(p->state == RUNNABLE){
+      // Switch to chosen process.  It is the process's job
+      // to release its lock and then reacquire it
+      // before jumping back to us.
+      p->state = RUNNING;
+      c->proc = p;
+      uint temp_ticks = ticks;
+      swtch(&c->context, &p->context);
+      p->last_ticks = ticks - temp_ticks;
+      p->mean_ticks = ((10 - rate) * p->mean_ticks + p->last_ticks * (rate)) / 10;
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      c->proc = 0;
+    }
+    release(&p->lock);
   }
+  } // maybe need to back to the original like nitzam
 }
 
 // Switch to scheduler.  Must hold only p->lock
@@ -595,6 +615,29 @@ kill(int pid)
   }
   return -1;
 }
+
+int
+pause_system(int seconds){
+  timeTarget = ticks + (seconds * 10);
+  isPaused = 1;
+  yield();
+  return 0;
+
+}
+
+int
+kill_system(void){
+  struct proc *p;
+  for(p = proc + 2; p < &proc[NPROC]; p++){
+    if (p != myproc()){
+      kill(p->pid);
+    }
+  }
+  kill(myproc()->pid);
+  yield();
+  return 0;
+}
+
 
 // Copy to either a user address, or kernel address,
 // depending on usr_dst.
